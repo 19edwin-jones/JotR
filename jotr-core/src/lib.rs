@@ -11,7 +11,7 @@ pub struct NoteStore {
 
 impl NoteStore {
     pub fn new() -> Self {
-        Self { notes: Vec::new() }
+        Self::default()
     }
     pub fn add_note(&mut self, content: String) {
         let note = Note {
@@ -21,8 +21,14 @@ impl NoteStore {
         self.notes.push(note);
     }
 
+    // read all notes
     pub fn notes(&self) -> &[Note] {
         &self.notes
+    }
+
+    // read a specifc note
+    pub fn get_note(&self, id: u64) -> Option<&Note> {
+        self.notes.iter().find(|note| note.id == id)
     }
 }
 
@@ -38,5 +44,12 @@ mod tests {
 
         assert_eq!(store.notes().len(), 1);
         assert_eq!(store.notes()[0].content, "Hello JotR");
+    }
+
+    #[test]
+    fn can_get_note_by_id() {
+        let  store = NoteStore::new();
+
+        assert_eq!(store.get_note(999), None);
     }
 }
