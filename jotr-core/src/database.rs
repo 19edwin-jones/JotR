@@ -54,7 +54,7 @@ pub fn get_note_by_id(connection: &Connection, id: i64) -> Result<Option<Note>> 
 }
 
 pub fn get_all_notes(connection: &Connection) -> Result<Vec<Note>> {
-    let mut stmt = connection.prepare("SELECT id, content FROM notes")?;
+    let mut stmt = connection.prepare("SELECT id, content FROM notes ORDER BY id")?;
     let note_iter = stmt.query_map([], |row| {
         Ok(Note {
             id: row.get(0)?,
@@ -119,7 +119,7 @@ mod tests {
         Ok(())
     }
 
-    #[test] // READ
+    #[test] // READ: Single Note
     fn can_get_note_by_id() -> Result<()> {
         let connection = setup_db()?;
 
@@ -133,6 +133,32 @@ mod tests {
                 id,
                 content: "Hello JotR".to_string()
             })
+        );
+
+        Ok(())
+    }
+
+    #[test] // READ: All Notes
+    fn can_get_all_notes() -> Result<()> {
+        let connection = setup_db()?;
+
+        let id1 = add_note(&connection, "Hello JotR")?;
+        let id2 = add_note(&connection, "Second note")?;
+
+        let notes = get_all_notes(&connection)?;
+
+        assert_eq!(
+            notes,
+            vec![
+                Note {
+                    id: id1,
+                    content: "Hello JotR".to_string()
+                },
+                Note {
+                    id: id2,
+                    content: "Second note".to_string()
+                }
+            ]
         );
 
         Ok(())

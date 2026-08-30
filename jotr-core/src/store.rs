@@ -1,46 +1,48 @@
+use rusqlite::{Connection, Result};
+
+use crate::database;
 use crate::note::Note;
 
-#[derive(Default)]
 pub struct NoteStore {
-    notes: Vec<Note>,
+    connection: Connection,
 }
 
 impl NoteStore {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new() -> Result<Self> {
+        let connection = database::open_database()?;
+
+        Ok(Self { connection })
     }
 
-    pub fn notes(&self) -> &[Note] {
-        &self.notes
+    pub fn from_connection(connection: Connection) -> Self {
+        Self { connection }
     }
 
-    pub fn add_note(&mut self, content: String) {
-        let note = Note {
-            id: self.notes.len() as i64,
-            content,
-        };
-
-        self.notes.push(note);
+    pub fn add_note(&self, content: &str) -> Result<i64> {
+        database::add_note(&self.connection, content)
     }
 
-    pub fn get_note(&self, id: i64) -> Option<&Note> {
-        self.notes.iter().find(|note| note.id == id)
+    pub fn get_note(&self, id: i64) -> Result<Option<Note>> {
+        database::get_note_by_id(&self.connection, id)
     }
 
-    pub fn update_note(&mut self, id: i64, new_content: String) -> Option<&Note> {
-        if let Some(note) = self.notes.iter_mut().find(|note| note.id == id) {
-            note.content = new_content;
-            Some(note)
-        } else {
-            None
+    pub fn notes(&self) -> Result<Vec<Note>> {
+        database::get_all_notes(&self.connection)
+    }
+
+    pub fn update_note(&self, id: i64, content: &str) -> Result<Option<Note>> {
+        let updated = database::update_note(&self.connection, id, content)?;
+
+        if updated { self.get_note(id) } else { Ok(None) }
+    }
+
+    pub fn delete_note(&self, id: i64) -> Result<Option<Note>> {
+        let note = self.get_note(id)?;
+
+        if note.is_some() {
+            database::delete_note(&self.connection, id)?;
         }
-    }
 
-    pub fn delete_note(&mut self, id: i64) -> Option<Note> {
-        if let Some(pos) = self.notes.iter().position(|note| note.id == id) {
-            Some(self.notes.remove(pos))
-        } else {
-            None
-        }
+        Ok(note)
     }
 }

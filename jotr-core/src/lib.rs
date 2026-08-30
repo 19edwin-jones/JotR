@@ -8,55 +8,49 @@ pub use store::NoteStore;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database;
+    use rusqlite::{Connection, Result};
 
-    #[test]
-    fn can_add_note() {
-        let mut store = NoteStore::new();
+    fn setup_store() -> Result<NoteStore> {
+        let connection = Connection::open_in_memory()?;
+        database::initialize_database(&connection)?;
 
-        store.add_note("Hello JotR".to_string());
-
-        assert_eq!(store.notes().len(), 1);
-        assert_eq!(store.notes()[0].content, "Hello JotR");
+        Ok(NoteStore::from_connection(connection))
     }
 
     #[test]
-    fn can_get_note_by_id() {
-        let store = NoteStore::new();
+    fn update_returns_updated_note() -> Result<()> {
+        let store = setup_store()?;
 
-        assert_eq!(store.get_note(999), None);
-    }
-
-    #[test]
-    fn can_update_note() {
-        let mut store = NoteStore::new();
-
-        store.add_note("Hello JotR".to_string());
+        let id = store.add_note("Hello JotR")?;
+        let note = store.update_note(id, "Updated content")?;
 
         assert_eq!(
-            store.update_note(0, "Updated content".to_string()),
-            Some(&Note {
-                id: 0,
-                content: "Updated content".to_string()
-            })
-        );
-
-        assert_eq!(store.notes()[0].content, "Updated content");
-    }
-
-    #[test]
-    fn can_delete_note() {
-        let mut store = NoteStore::new();
-
-        store.add_note("Hello JotR".to_string());
-
-        assert_eq!(
-            store.delete_note(0),
+            note,
             Some(Note {
-                id: 0,
-                content: "Hello JotR".to_string()
+                id,
+                content: "Updated content".to_string(),
             })
         );
 
-        assert_eq!(store.notes().len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn delete_returns_deleted_note() -> Result<()> {
+        let store = setup_store()?;
+
+        let id = store.add_note("Hello JotR")?;
+        let note = store.delete_note(id)?;
+
+        assert_eq!(
+            note,
+            Some(Note {
+                id,
+                content: "Hello JotR".to_string(),
+            })
+        );
+
+        Ok(())
     }
 }
