@@ -46,3 +46,74 @@ impl NoteStore {
         Ok(note)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup_store() -> Result<NoteStore> {
+        let connection = Connection::open_in_memory()?;
+        database::initialize_database(&connection)?;
+
+        Ok(NoteStore::from_connection(connection))
+    }
+
+    #[test]
+    fn update_returns_updated_note() -> Result<()> {
+        let store = setup_store()?;
+
+        let id = store.add_note("Hello JotR")?;
+        let note = store.update_note(id, "Updated content")?;
+
+        assert_eq!(
+            note,
+            Some(Note {
+                id,
+                content: "Updated content".to_string(),
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn delete_returns_deleted_note() -> Result<()> {
+        let store = setup_store()?;
+
+        let id = store.add_note("Hello JotR")?;
+        let note = store.delete_note(id)?;
+
+        assert_eq!(
+            note,
+            Some(Note {
+                id,
+                content: "Hello JotR".to_string(),
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_missing_note_returns_none() -> Result<()> {
+        let store = setup_store()?;
+
+        let note = store.update_note(999, "Updated content")?;
+
+        assert_eq!(note, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn delete_missing_note_returns_none() -> Result<()> {
+        let store = setup_store()?;
+
+        let note = store.delete_note(999)?;
+
+        assert_eq!(note, None);
+
+        Ok(())
+    }
+}
