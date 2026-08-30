@@ -12,7 +12,7 @@ pub fn open_database() -> Result<Connection> {
     Ok(connection)
 }
 
-fn initialize_database(connection: &Connection) -> Result<()> {
+pub fn initialize_database(connection: &Connection) -> Result<()> {
     connection.execute(
         "
         CREATE TABLE IF NOT EXISTS notes (
@@ -51,6 +51,23 @@ pub fn get_note_by_id(connection: &Connection, id: i64) -> Result<Option<Note>> 
         .optional()?;
 
     Ok(note)
+}
+
+pub fn get_all_notes(connection: &Connection) -> Result<Vec<Note>> {
+    let mut stmt = connection.prepare("SELECT id, content FROM notes")?;
+    let note_iter = stmt.query_map([], |row| {
+        Ok(Note {
+            id: row.get(0)?,
+            content: row.get(1)?,
+        })
+    })?;
+
+    let mut notes = Vec::new();
+    for note in note_iter {
+        notes.push(note?);
+    }
+
+    Ok(notes)
 }
 
 pub fn update_note(connection: &Connection, id: i64, new_content: &str) -> Result<bool> {
@@ -155,6 +172,39 @@ mod tests {
 
         let content = get_note_by_id(&connection, id)?;
         assert_eq!(content, None);
+
+        Ok(())
+    }
+
+    #[test] // READ: Missing Note
+    fn missing_note_returns_none() -> Result<()> {
+        let connection = setup_db()?;
+
+        let note = get_note_by_id(&connection, 999)?;
+
+        assert_eq!(note, None);
+
+        Ok(())
+    }
+
+    #[test] // UPDATE: Missing Note
+    fn updating_missing_note_returns_false() -> Result<()> {
+        let connection = setup_db()?;
+
+        let updated = update_note(&connection, 999, "Updated content")?;
+
+        assert!(!updated);
+
+        Ok(())
+    }
+
+    #[test] // DELETE: Missing Note
+    fn deleting_missing_note_returns_false() -> Result<()> {
+        let connection = setup_db()?;
+
+        let deleted = delete_note(&connection, 999)?;
+
+        assert!(!deleted);
 
         Ok(())
     }
