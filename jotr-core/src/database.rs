@@ -1,3 +1,4 @@
+use chrono::Utc;
 use rusqlite::OptionalExtension;
 use rusqlite::params;
 use rusqlite::{Connection, Result};
@@ -18,6 +19,8 @@ pub fn initialize_database(connection: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS notes (
             id INTEGER PRIMARY KEY,
             content TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
         ",
         [],
@@ -27,12 +30,14 @@ pub fn initialize_database(connection: &Connection) -> Result<()> {
 }
 
 pub fn add_note(connection: &Connection, content: &str) -> Result<i64> {
+    let current_time = get_timestamp();
+    let updated_time = get_timestamp();
     connection.execute(
         "
         INSERT INTO notes (content)
         VALUES (?1)
         ",
-        [content],
+        params![content, current_time, updated_time],
     )?;
 
     Ok(connection.last_insert_rowid())
@@ -93,6 +98,10 @@ pub fn delete_note(connection: &Connection, id: i64) -> Result<bool> {
     )?;
 
     Ok(rows_deleted > 0)
+}
+
+fn get_timestamp() -> String {
+    Utc::now().to_rfc3339()
 }
 
 #[cfg(test)]
