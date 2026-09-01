@@ -16,7 +16,7 @@ See `GETTING_STARTED.md` for development notes.
 ## Roadmap
 
 * [x] Basic note CRUD
-* [ ] Local persistent storage with SQLite
+* [x] Local persistent storage with SQLite
 * [ ] Basic desktop interface
 * [ ] Note organization and management
 * [ ] Self-hosted note syncing
