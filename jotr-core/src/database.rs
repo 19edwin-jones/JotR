@@ -18,7 +18,7 @@ pub fn initialize_database(connection: &Connection) -> Result<()> {
         "
         CREATE TABLE IF NOT EXISTS notes (
             id INTEGER PRIMARY KEY,
-            content TEXT NOT NULL
+            content TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -30,12 +30,12 @@ pub fn initialize_database(connection: &Connection) -> Result<()> {
 }
 
 pub fn add_note(connection: &Connection, content: &str) -> Result<i64> {
-    let current_time = get_timestamp();
-    let updated_time = get_timestamp();
+    let current_time = Utc::now();
+    let updated_time = current_time; // New note, so updated time is the same as created time
     connection.execute(
         "
-        INSERT INTO notes (content)
-        VALUES (?1)
+        INSERT INTO notes (content, created_at, updated_at)
+        VALUES (?1, ?2, ?3)
         ",
         params![content, current_time, updated_time],
     )?;
@@ -44,13 +44,16 @@ pub fn add_note(connection: &Connection, content: &str) -> Result<i64> {
 }
 
 pub fn get_note_by_id(connection: &Connection, id: i64) -> Result<Option<Note>> {
-    let mut stmt = connection.prepare("SELECT id, content FROM notes WHERE id = ?1")?;
+    let mut stmt = connection
+        .prepare("SELECT id, content, created_at, updated_at FROM notes WHERE id = ?1")?;
 
     let note = stmt
         .query_row([id], |row| {
             Ok(Note {
                 id: row.get(0)?,
                 content: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
             })
         })
         .optional()?;
@@ -59,11 +62,14 @@ pub fn get_note_by_id(connection: &Connection, id: i64) -> Result<Option<Note>> 
 }
 
 pub fn get_all_notes(connection: &Connection) -> Result<Vec<Note>> {
-    let mut stmt = connection.prepare("SELECT id, content FROM notes ORDER BY id")?;
+    let mut stmt =
+        connection.prepare("SELECT id, content, created_at, updated_at FROM notes ORDER BY id")?;
     let note_iter = stmt.query_map([], |row| {
         Ok(Note {
             id: row.get(0)?,
             content: row.get(1)?,
+            created_at: row.get(2)?,
+            updated_at: row.get(3)?,
         })
     })?;
 
@@ -76,13 +82,16 @@ pub fn get_all_notes(connection: &Connection) -> Result<Vec<Note>> {
 }
 
 pub fn update_note(connection: &Connection, id: i64, new_content: &str) -> Result<bool> {
+    let updated_time = Utc::now();
+
     let rows_updated = connection.execute(
         "
         UPDATE notes
-        SET content = ?1
-        WHERE id = ?2
+        SET content = ?1,
+            updated_at = ?2
+        WHERE id = ?3
         ",
-        params![new_content, id],
+        params![new_content, updated_time, id],
     )?;
 
     Ok(rows_updated > 0)
@@ -98,10 +107,6 @@ pub fn delete_note(connection: &Connection, id: i64) -> Result<bool> {
     )?;
 
     Ok(rows_deleted > 0)
-}
-
-fn get_timestamp() -> String {
-    Utc::now().to_rfc3339()
 }
 
 #[cfg(test)]
@@ -132,17 +137,23 @@ mod tests {
     fn can_get_note_by_id() -> Result<()> {
         let connection = setup_db()?;
 
+        let before = Utc::now();
+
         let id = add_note(&connection, "Hello JotR")?;
 
-        let content = get_note_by_id(&connection, id)?;
+        let after = Utc::now();
 
-        assert_eq!(
-            content,
-            Some(Note {
-                id,
-                content: "Hello JotR".to_string()
-            })
-        );
+        let note = get_note_by_id(&connection, id)?.expect("Note should exist");
+
+        assert_eq!(note.id, id);
+        assert_eq!(note.content, "Hello JotR");
+
+        // Check that creation time (add_note call) is between `before` and `after` time
+        assert!(note.created_at >= before);
+        assert!(note.created_at <= after);
+
+        // Note was only created, therefore no updates made
+        assert!(note.updated_at == note.created_at);
 
         Ok(())
     }
@@ -151,24 +162,21 @@ mod tests {
     fn can_get_all_notes() -> Result<()> {
         let connection = setup_db()?;
 
-        let id1 = add_note(&connection, "Hello JotR")?;
+        let id1 = add_note(&connection, "First note")?;
         let id2 = add_note(&connection, "Second note")?;
 
         let notes = get_all_notes(&connection)?;
 
-        assert_eq!(
-            notes,
-            vec![
-                Note {
-                    id: id1,
-                    content: "Hello JotR".to_string()
-                },
-                Note {
-                    id: id2,
-                    content: "Second note".to_string()
-                }
-            ]
-        );
+        assert_eq!(notes.len(), 2);
+
+        assert_eq!(notes[0].id, id1);
+        assert_eq!(notes[0].content, "First note");
+
+        assert_eq!(notes[1].id, id2);
+        assert_eq!(notes[1].content, "Second note");
+
+        assert!(notes[0].created_at == notes[0].updated_at);
+        assert!(notes[1].created_at == notes[1].updated_at);
 
         Ok(())
     }
@@ -183,14 +191,9 @@ mod tests {
 
         assert!(updated);
 
-        let content = get_note_by_id(&connection, id)?;
-        assert_eq!(
-            content,
-            Some(Note {
-                id,
-                content: "Updated content".to_string()
-            })
-        );
+        let note = get_note_by_id(&connection, id)?.expect("Note should exist");
+
+        assert_eq!(note.content, "Updated content");
 
         Ok(())
     }

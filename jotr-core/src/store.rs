@@ -64,15 +64,17 @@ mod tests {
         let store = setup_store()?;
 
         let id = store.add_note("Hello JotR")?;
-        let note = store.update_note(id, "Updated content")?;
+        let original = store.get_note(id)?.expect("Note should exist");
 
-        assert_eq!(
-            note,
-            Some(Note {
-                id,
-                content: "Updated content".to_string(),
-            })
-        );
+        let updated = store
+            .update_note(id, "Updated content")?
+            .expect("Updated note should exist");
+
+        assert_eq!(updated.id, id);
+        assert_eq!(updated.content, "Updated content");
+
+        assert_eq!(updated.created_at, original.created_at);
+        assert!(updated.updated_at >= original.updated_at);
 
         Ok(())
     }
@@ -82,15 +84,18 @@ mod tests {
         let store = setup_store()?;
 
         let id = store.add_note("Hello JotR")?;
-        let note = store.delete_note(id)?;
+        let original = store.get_note(id)?.expect("Note should exist");
 
-        assert_eq!(
-            note,
-            Some(Note {
-                id,
-                content: "Hello JotR".to_string(),
-            })
-        );
+        let deleted = store
+            .delete_note(id)?
+            .expect("Deleted note should be returned");
+
+        assert_eq!(deleted.id, id);
+        assert_eq!(deleted.content, "Hello JotR");
+        assert_eq!(deleted.created_at, original.created_at);
+        assert_eq!(deleted.updated_at, original.updated_at);
+
+        assert_eq!(store.get_note(id)?, None);
 
         Ok(())
     }
