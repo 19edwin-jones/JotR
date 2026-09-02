@@ -1,3 +1,8 @@
+//! Raw SQLite access for notes. Every function here maps 1:1 to a statement;
+//! domain rules (soft delete, retention policy, etc.) live one layer up in
+//! `store`. Keeping that split means the SQL shape can change without the
+//! rest of the app knowing.
+
 use chrono::DateTime;
 use chrono::Utc;
 use rusqlite::OptionalExtension;
@@ -7,6 +12,8 @@ use rusqlite::{Connection, Result};
 
 use crate::note::Note;
 
+// Column order must match every query's SELECT list below; centralizing the
+// mapping here means a schema change only needs one update, not one per query.
 fn note_from_row(row: &Row) -> Result<Note> {
     Ok(Note {
         id: row.get(0)?,
@@ -17,6 +24,8 @@ fn note_from_row(row: &Row) -> Result<Note> {
     })
 }
 
+/// Opens the on-disk database the real app uses; tests use in-memory
+/// connections via `NoteStore::from_connection` instead.
 pub fn open_database() -> Result<Connection> {
     let connection = Connection::open("jotr.db")?;
 
@@ -25,6 +34,8 @@ pub fn open_database() -> Result<Connection> {
     Ok(connection)
 }
 
+/// Idempotent (`IF NOT EXISTS` everywhere), so it can run on every startup
+/// without a separate migration step.
 pub fn initialize_database(connection: &Connection) -> Result<()> {
     connection.execute(
         "
@@ -39,6 +50,9 @@ pub fn initialize_database(connection: &Connection) -> Result<()> {
         [],
     )?;
 
+    // Partial index: only deleted rows are ever queried by `deleted_at`
+    // (trash list, retention sweep), and they should stay a small minority —
+    // indexing just that slice avoids bloating the index on every write.
     connection.execute(
         "
         CREATE INDEX IF NOT EXISTS idx_notes_deleted_at
@@ -65,6 +79,8 @@ pub fn add_note(connection: &Connection, content: &str) -> Result<i64> {
     Ok(connection.last_insert_rowid())
 }
 
+/// Active-note lookup by id. Soft-deleted notes count as not found; use
+/// `get_deleted_notes` to see trashed ones.
 pub fn get_note_by_id(connection: &Connection, id: i64) -> Result<Option<Note>> {
     let mut stmt = connection.prepare(
         "
@@ -80,6 +96,7 @@ pub fn get_note_by_id(connection: &Connection, id: i64) -> Result<Option<Note>> 
     Ok(note)
 }
 
+/// All active (non-deleted) notes, oldest first.
 pub fn get_all_notes(connection: &Connection) -> Result<Vec<Note>> {
     let mut stmt = connection.prepare(
         "
@@ -97,6 +114,8 @@ pub fn get_all_notes(connection: &Connection) -> Result<Vec<Note>> {
     Ok(notes)
 }
 
+/// Updates content and `updated_at`. Returns whether a row changed, so
+/// callers can tell "updated" apart from "no such note".
 pub fn update_note(connection: &Connection, id: i64, new_content: &str) -> Result<bool> {
     let updated_time = Utc::now();
 
@@ -113,6 +132,12 @@ pub fn update_note(connection: &Connection, id: i64, new_content: &str) -> Resul
     Ok(rows_updated > 0)
 }
 
+/// Soft-deletes a note (stamps `deleted_at`) and returns it, or `None` if
+/// it doesn't exist or is already deleted.
+///
+/// Uses `UPDATE ... RETURNING` to combine the write and the read into one
+/// round trip. The `deleted_at IS NULL` guard makes repeat calls a no-op
+/// instead of overwriting the original deletion timestamp.
 pub fn soft_delete_note(connection: &Connection, id: i64) -> Result<Option<Note>> {
     let deleted_time = Utc::now();
 
@@ -133,6 +158,9 @@ pub fn soft_delete_note(connection: &Connection, id: i64) -> Result<Option<Note>
     Ok(note)
 }
 
+/// Permanently removes notes soft-deleted before `cutoff` — the retention
+/// sweep. Takes a plain timestamp rather than a duration, so the "keep for
+/// N days" policy stays in `NoteStore::cleanup_deleted_notes`.
 pub fn hard_delete_expired_notes(connection: &Connection, cutoff: DateTime<Utc>) -> Result<usize> {
     let rows_deleted = connection.execute(
         "
@@ -146,6 +174,8 @@ pub fn hard_delete_expired_notes(connection: &Connection, cutoff: DateTime<Utc>)
     Ok(rows_deleted)
 }
 
+/// The trash: soft-deleted notes not yet purged, most recently deleted
+/// first (the likeliest "undo" candidate).
 pub fn get_deleted_notes(connection: &Connection) -> Result<Vec<Note>> {
     let mut stmt = connection.prepare(
         "
@@ -163,6 +193,8 @@ pub fn get_deleted_notes(connection: &Connection) -> Result<Vec<Note>> {
     Ok(notes)
 }
 
+/// Unconditionally deletes a note — the "delete forever" action. Unlike
+/// `hard_delete_expired_notes`, it ignores `deleted_at` entirely.
 pub fn hard_delete_note(connection: &Connection, id: i64) -> Result<bool> {
     let rows_deleted = connection.execute(
         "
@@ -175,6 +207,8 @@ pub fn hard_delete_note(connection: &Connection, id: i64) -> Result<bool> {
     Ok(rows_deleted > 0)
 }
 
+/// Reverses a soft delete. Guarded by `deleted_at IS NOT NULL` so
+/// restoring an already-active note is a no-op, not a false success.
 pub fn restore_note(connection: &Connection, id: i64) -> Result<bool> {
     let rows_restored = connection.execute(
         "

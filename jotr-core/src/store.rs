@@ -4,17 +4,24 @@ use rusqlite::{Connection, Result};
 use crate::database;
 use crate::note::Note;
 
+/// Public entry point for note storage. Wraps a `database` connection,
+/// translating its low-level results into richer return types and adding
+/// the domain policy (soft delete, retention) that `database` stays
+/// agnostic of.
 pub struct NoteStore {
     connection: Connection,
 }
 
 impl NoteStore {
+    /// Opens the app's real, on-disk database.
     pub fn new() -> Result<Self> {
         let connection = database::open_database()?;
 
         Ok(Self { connection })
     }
 
+    /// Builds a store around an existing connection — used by tests to run
+    /// against an in-memory database instead of the real `jotr.db` file.
     pub fn from_connection(connection: Connection) -> Self {
         Self { connection }
     }
@@ -31,30 +38,43 @@ impl NoteStore {
         database::get_all_notes(&self.connection)
     }
 
+    /// `database::update_note` only reports whether a row changed; re-fetch
+    /// so callers get the updated note (with its bumped `updated_at`) directly.
     pub fn update_note(&self, id: i64, content: &str) -> Result<Option<Note>> {
         let updated = database::update_note(&self.connection, id, content)?;
 
         if updated { self.get_note(id) } else { Ok(None) }
     }
 
+    /// Notes currently in the trash (soft-deleted, not yet purged).
     pub fn deleted_notes(&self) -> Result<Vec<Note>> {
         database::get_deleted_notes(&self.connection)
     }
 
+    /// Soft-deletes a note: the row still exists and can be brought back
+    /// with `restore_note`, until `cleanup_deleted_notes` or
+    /// `permanently_delete_note` removes it for good.
     pub fn delete_note(&self, id: i64) -> Result<Option<Note>> {
         database::soft_delete_note(&self.connection, id)
     }
 
+    /// Permanently purges trashed notes older than `retention_days` — this
+    /// is where the retention policy lives; `database` only compares
+    /// timestamps. A negative `retention_days` (handy in tests) puts the
+    /// cutoff in the future, making every trashed note eligible immediately.
     pub fn cleanup_deleted_notes(&self, retention_days: i64) -> Result<usize> {
         let cutoff = Utc::now() - chrono::Duration::days(retention_days);
 
         database::hard_delete_expired_notes(&self.connection, cutoff)
     }
 
+    /// Deletes a note immediately, bypassing the trash — "delete forever",
+    /// as opposed to `delete_note`'s everyday soft delete.
     pub fn permanently_delete_note(&self, id: i64) -> Result<bool> {
         database::hard_delete_note(&self.connection, id)
     }
 
+    /// Undoes a soft delete, returning the note to normal (active) reads.
     pub fn restore_note(&self, id: i64) -> Result<bool> {
         database::restore_note(&self.connection, id)
     }
