@@ -37,6 +37,10 @@ impl NoteStore {
         if updated { self.get_note(id) } else { Ok(None) }
     }
 
+    pub fn deleted_notes(&self) -> Result<Vec<Note>> {
+        database::get_deleted_notes(&self.connection)
+    }
+
     pub fn delete_note(&self, id: i64) -> Result<Option<Note>> {
         let note = self.get_note(id)?;
 
@@ -51,6 +55,14 @@ impl NoteStore {
         let cutoff = Utc::now() - chrono::Duration::days(retention_days);
 
         database::hard_delete_expired_notes(&self.connection, cutoff)
+    }
+
+    pub fn permanently_delete_note(&self, id: i64) -> Result<bool> {
+        database::hard_delete_note(&self.connection, id)
+    }
+
+    pub fn restore_note(&self, id: i64) -> Result<bool> {
+        database::restore_note(&self.connection, id)
     }
 }
 
@@ -125,6 +137,74 @@ mod tests {
         let note = store.delete_note(999)?;
 
         assert_eq!(note, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn deleted_notes_returns_soft_deleted_notes() -> Result<()> {
+        let store = setup_store()?;
+
+        let id = store.add_note("Hello JotR")?;
+        store.delete_note(id)?;
+
+        let deleted = store.deleted_notes()?;
+
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].id, id);
+        assert!(deleted[0].deleted_at.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn restore_returns_note_to_active_notes() -> Result<()> {
+        let store = setup_store()?;
+
+        let id = store.add_note("Hello JotR")?;
+        store.delete_note(id)?;
+
+        let restored = store.restore_note(id)?;
+
+        assert!(restored);
+
+        let note = store
+            .get_note(id)?
+            .expect("Restored note should be active again");
+
+        assert_eq!(note.id, id);
+        assert_eq!(note.content, "Hello JotR");
+        assert_eq!(note.deleted_at, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_deleted_notes_removes_expired_notes() -> Result<()> {
+        let store = setup_store()?;
+
+        let id = store.add_note("Hello JotR")?;
+        store.delete_note(id)?;
+
+        let deleted = store.cleanup_deleted_notes(-1)?;
+
+        assert_eq!(deleted, 1);
+        assert!(store.deleted_notes()?.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn permanently_delete_note_removes_note() -> Result<()> {
+        let store = setup_store()?;
+
+        let id = store.add_note("Hello JotR")?;
+        store.delete_note(id)?;
+
+        let deleted = store.permanently_delete_note(id)?;
+
+        assert!(deleted);
+        assert!(store.deleted_notes()?.is_empty());
 
         Ok(())
     }

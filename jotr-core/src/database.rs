@@ -144,6 +144,61 @@ pub fn hard_delete_expired_notes(connection: &Connection, cutoff: DateTime<Utc>)
     Ok(rows_deleted)
 }
 
+pub fn get_deleted_notes(connection: &Connection) -> Result<Vec<Note>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT id, content, created_at, updated_at, deleted_at
+        FROM notes
+        WHERE deleted_at IS NOT NULL
+        ORDER BY deleted_at DESC
+        ",
+    )?;
+
+    let note_iter = stmt.query_map([], |row| {
+        Ok(Note {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            created_at: row.get(2)?,
+            updated_at: row.get(3)?,
+            deleted_at: row.get(4)?,
+        })
+    })?;
+
+    let mut notes = Vec::new();
+
+    for note in note_iter {
+        notes.push(note?);
+    }
+
+    Ok(notes)
+}
+
+pub fn hard_delete_note(connection: &Connection, id: i64) -> Result<bool> {
+    let rows_deleted = connection.execute(
+        "
+        DELETE FROM notes
+        WHERE id = ?1
+        ",
+        [id],
+    )?;
+
+    Ok(rows_deleted > 0)
+}
+
+pub fn restore_note(connection: &Connection, id: i64) -> Result<bool> {
+    let rows_restored = connection.execute(
+        "
+        UPDATE notes
+        SET deleted_at = NULL
+        WHERE id = ?1
+        AND deleted_at IS NOT NULL
+        ",
+        [id],
+    )?;
+
+    Ok(rows_restored > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +367,45 @@ mod tests {
         let rows_deleted = hard_delete_expired_notes(&connection, cutoff)?;
 
         assert_eq!(rows_deleted, 0);
+
+        Ok(())
+    }
+
+    #[test] // READ: Get deleted notes
+    fn can_get_deleted_notes() -> Result<()> {
+        let connection = setup_db()?;
+
+        let id1 = add_note(&connection, "First note")?;
+        let id2 = add_note(&connection, "Second note")?;
+
+        soft_delete_note(&connection, id1)?;
+        soft_delete_note(&connection, id2)?;
+
+        let deleted_notes = get_deleted_notes(&connection)?;
+
+        assert_eq!(deleted_notes.len(), 2);
+        assert_eq!(deleted_notes[0].id, id2);
+        assert_eq!(deleted_notes[1].id, id1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn can_restore_note() -> Result<()> {
+        let connection = setup_db()?;
+
+        let id = add_note(&connection, "Hello JotR")?;
+        soft_delete_note(&connection, id)?;
+
+        let restored = restore_note(&connection, id)?;
+
+        assert!(restored);
+
+        let note = get_note_by_id(&connection, id)?.expect("Note should exist");
+
+        assert_eq!(note.id, id);
+        assert_eq!(note.content, "Hello JotR");
+        assert!(note.deleted_at.is_none());
 
         Ok(())
     }
