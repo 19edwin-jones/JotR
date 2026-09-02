@@ -42,13 +42,7 @@ impl NoteStore {
     }
 
     pub fn delete_note(&self, id: i64) -> Result<Option<Note>> {
-        let note = self.get_note(id)?;
-
-        if note.is_some() {
-            database::soft_delete_note(&self.connection, id)?;
-        }
-
-        Ok(note)
+        database::soft_delete_note(&self.connection, id)
     }
 
     pub fn cleanup_deleted_notes(&self, retention_days: i64) -> Result<usize> {

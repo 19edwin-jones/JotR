@@ -1,10 +1,21 @@
 use chrono::DateTime;
 use chrono::Utc;
 use rusqlite::OptionalExtension;
+use rusqlite::Row;
 use rusqlite::params;
 use rusqlite::{Connection, Result};
 
 use crate::note::Note;
+
+fn note_from_row(row: &Row) -> Result<Note> {
+    Ok(Note {
+        id: row.get(0)?,
+        content: row.get(1)?,
+        created_at: row.get(2)?,
+        updated_at: row.get(3)?,
+        deleted_at: row.get(4)?,
+    })
+}
 
 pub fn open_database() -> Result<Connection> {
     let connection = Connection::open("jotr.db")?;
@@ -24,6 +35,15 @@ pub fn initialize_database(connection: &Connection) -> Result<()> {
             updated_at TEXT NOT NULL,
             deleted_at TEXT
         )
+        ",
+        [],
+    )?;
+
+    connection.execute(
+        "
+        CREATE INDEX IF NOT EXISTS idx_notes_deleted_at
+        ON notes (deleted_at)
+        WHERE deleted_at IS NOT NULL
         ",
         [],
     )?;
@@ -55,17 +75,7 @@ pub fn get_note_by_id(connection: &Connection, id: i64) -> Result<Option<Note>> 
         ",
     )?;
 
-    let note = stmt
-        .query_row([id], |row| {
-            Ok(Note {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                created_at: row.get(2)?,
-                updated_at: row.get(3)?,
-                deleted_at: row.get(4)?,
-            })
-        })
-        .optional()?;
+    let note = stmt.query_row([id], note_from_row).optional()?;
 
     Ok(note)
 }
@@ -80,21 +90,9 @@ pub fn get_all_notes(connection: &Connection) -> Result<Vec<Note>> {
         ",
     )?;
 
-    let note_iter = stmt.query_map([], |row| {
-        Ok(Note {
-            id: row.get(0)?,
-            content: row.get(1)?,
-            created_at: row.get(2)?,
-            updated_at: row.get(3)?,
-            deleted_at: row.get(4)?,
-        })
-    })?;
-
-    let mut notes = Vec::new();
-
-    for note in note_iter {
-        notes.push(note?);
-    }
+    let notes = stmt
+        .query_map([], note_from_row)?
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(notes)
 }
@@ -115,20 +113,24 @@ pub fn update_note(connection: &Connection, id: i64, new_content: &str) -> Resul
     Ok(rows_updated > 0)
 }
 
-pub fn soft_delete_note(connection: &Connection, id: i64) -> Result<bool> {
+pub fn soft_delete_note(connection: &Connection, id: i64) -> Result<Option<Note>> {
     let deleted_time = Utc::now();
 
-    let rows_deleted = connection.execute(
+    let mut stmt = connection.prepare(
         "
         UPDATE notes
         SET deleted_at = ?1
         WHERE id = ?2
         AND deleted_at IS NULL
+        RETURNING id, content, created_at, updated_at, deleted_at
         ",
-        params![deleted_time, id],
     )?;
 
-    Ok(rows_deleted > 0)
+    let note = stmt
+        .query_row(params![deleted_time, id], note_from_row)
+        .optional()?;
+
+    Ok(note)
 }
 
 pub fn hard_delete_expired_notes(connection: &Connection, cutoff: DateTime<Utc>) -> Result<usize> {
@@ -154,21 +156,9 @@ pub fn get_deleted_notes(connection: &Connection) -> Result<Vec<Note>> {
         ",
     )?;
 
-    let note_iter = stmt.query_map([], |row| {
-        Ok(Note {
-            id: row.get(0)?,
-            content: row.get(1)?,
-            created_at: row.get(2)?,
-            updated_at: row.get(3)?,
-            deleted_at: row.get(4)?,
-        })
-    })?;
-
-    let mut notes = Vec::new();
-
-    for note in note_iter {
-        notes.push(note?);
-    }
+    let notes = stmt
+        .query_map([], note_from_row)?
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(notes)
 }
@@ -289,7 +279,7 @@ mod tests {
         let id = add_note(&connection, "Hello JotR")?;
         let deleted = soft_delete_note(&connection, id)?;
 
-        assert!(deleted);
+        assert!(deleted.is_some());
 
         let note = get_note_by_id(&connection, id)?;
 
@@ -353,7 +343,7 @@ mod tests {
 
         let deleted = soft_delete_note(&connection, 999)?;
 
-        assert!(!deleted);
+        assert!(deleted.is_none());
 
         Ok(())
     }
