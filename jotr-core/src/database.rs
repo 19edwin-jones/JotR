@@ -1,3 +1,4 @@
+use chrono::DateTime;
 use chrono::Utc;
 use rusqlite::OptionalExtension;
 use rusqlite::params;
@@ -20,7 +21,8 @@ pub fn initialize_database(connection: &Connection) -> Result<()> {
             id INTEGER PRIMARY KEY,
             content TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
         )
         ",
         [],
@@ -44,8 +46,14 @@ pub fn add_note(connection: &Connection, content: &str) -> Result<i64> {
 }
 
 pub fn get_note_by_id(connection: &Connection, id: i64) -> Result<Option<Note>> {
-    let mut stmt = connection
-        .prepare("SELECT id, content, created_at, updated_at FROM notes WHERE id = ?1")?;
+    let mut stmt = connection.prepare(
+        "
+        SELECT id, content, created_at, updated_at, deleted_at
+        FROM notes
+        WHERE id = ?1
+        AND deleted_at IS NULL
+        ",
+    )?;
 
     let note = stmt
         .query_row([id], |row| {
@@ -54,6 +62,7 @@ pub fn get_note_by_id(connection: &Connection, id: i64) -> Result<Option<Note>> 
                 content: row.get(1)?,
                 created_at: row.get(2)?,
                 updated_at: row.get(3)?,
+                deleted_at: row.get(4)?,
             })
         })
         .optional()?;
@@ -62,18 +71,27 @@ pub fn get_note_by_id(connection: &Connection, id: i64) -> Result<Option<Note>> 
 }
 
 pub fn get_all_notes(connection: &Connection) -> Result<Vec<Note>> {
-    let mut stmt =
-        connection.prepare("SELECT id, content, created_at, updated_at FROM notes ORDER BY id")?;
+    let mut stmt = connection.prepare(
+        "
+        SELECT id, content, created_at, updated_at, deleted_at
+        FROM notes
+        WHERE deleted_at IS NULL
+        ORDER BY id
+        ",
+    )?;
+
     let note_iter = stmt.query_map([], |row| {
         Ok(Note {
             id: row.get(0)?,
             content: row.get(1)?,
             created_at: row.get(2)?,
             updated_at: row.get(3)?,
+            deleted_at: row.get(4)?,
         })
     })?;
 
     let mut notes = Vec::new();
+
     for note in note_iter {
         notes.push(note?);
     }
@@ -97,16 +115,33 @@ pub fn update_note(connection: &Connection, id: i64, new_content: &str) -> Resul
     Ok(rows_updated > 0)
 }
 
-pub fn delete_note(connection: &Connection, id: i64) -> Result<bool> {
+pub fn soft_delete_note(connection: &Connection, id: i64) -> Result<bool> {
+    let deleted_time = Utc::now();
+
     let rows_deleted = connection.execute(
         "
-        DELETE FROM notes
-        WHERE id = ?1
+        UPDATE notes
+        SET deleted_at = ?1
+        WHERE id = ?2
+        AND deleted_at IS NULL
         ",
-        [id],
+        params![deleted_time, id],
     )?;
 
     Ok(rows_deleted > 0)
+}
+
+pub fn hard_delete_expired_notes(connection: &Connection, cutoff: DateTime<Utc>) -> Result<usize> {
+    let rows_deleted = connection.execute(
+        "
+        DELETE FROM notes
+        WHERE deleted_at IS NOT NULL
+        AND deleted_at < ?1
+        ",
+        [cutoff],
+    )?;
+
+    Ok(rows_deleted)
 }
 
 #[cfg(test)]
@@ -159,24 +194,19 @@ mod tests {
     }
 
     #[test] // READ: All Notes
-    fn can_get_all_notes() -> Result<()> {
+    fn get_all_notes_excludes_soft_deleted_notes() -> Result<()> {
         let connection = setup_db()?;
 
         let id1 = add_note(&connection, "First note")?;
         let id2 = add_note(&connection, "Second note")?;
 
+        soft_delete_note(&connection, id1)?;
+
         let notes = get_all_notes(&connection)?;
 
-        assert_eq!(notes.len(), 2);
-
-        assert_eq!(notes[0].id, id1);
-        assert_eq!(notes[0].content, "First note");
-
-        assert_eq!(notes[1].id, id2);
-        assert_eq!(notes[1].content, "Second note");
-
-        assert!(notes[0].created_at == notes[0].updated_at);
-        assert!(notes[1].created_at == notes[1].updated_at);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, id2);
+        assert_eq!(notes[0].content, "Second note");
 
         Ok(())
     }
@@ -198,24 +228,50 @@ mod tests {
         Ok(())
     }
 
-    #[test] // DELETE
-    fn can_delete_note() -> Result<()> {
+    #[test] // SOFT DELETE
+    fn can_soft_delete_note() -> Result<()> {
         let connection = setup_db()?;
-
         let id = add_note(&connection, "Hello JotR")?;
-
-        let deleted = delete_note(&connection, id)?;
+        let deleted = soft_delete_note(&connection, id)?;
 
         assert!(deleted);
 
-        let content = get_note_by_id(&connection, id)?;
-        assert_eq!(content, None);
+        let note = get_note_by_id(&connection, id)?;
+
+        assert!(note.is_none());
 
         Ok(())
     }
 
-    #[test] // READ: Missing Note
-    fn missing_note_returns_none() -> Result<()> {
+    #[test] // HARD DELETE
+    fn can_hard_delete_expired_notes() -> Result<()> {
+        let connection = setup_db()?;
+
+        let id1 = add_note(&connection, "First note")?;
+        let id2 = add_note(&connection, "Second note")?;
+
+        soft_delete_note(&connection, id1)?;
+        soft_delete_note(&connection, id2)?;
+
+        let cutoff = Utc::now() + chrono::Duration::seconds(1);
+
+        let rows_deleted = hard_delete_expired_notes(&connection, cutoff)?;
+
+        assert_eq!(rows_deleted, 2);
+
+        let remaining: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM notes WHERE id IN (?1, ?2)",
+            params![id1, id2],
+            |row| row.get(0),
+        )?;
+
+        assert_eq!(remaining, 0);
+
+        Ok(())
+    }
+
+    #[test] // READ: Missing note that doesn't exist
+    fn getting_missing_note_returns_none() -> Result<()> {
         let connection = setup_db()?;
 
         let note = get_note_by_id(&connection, 999)?;
@@ -225,7 +281,7 @@ mod tests {
         Ok(())
     }
 
-    #[test] // UPDATE: Missing Note
+    #[test] // UPDATE: Missing note that doesn't exist
     fn updating_missing_note_returns_false() -> Result<()> {
         let connection = setup_db()?;
 
@@ -236,13 +292,26 @@ mod tests {
         Ok(())
     }
 
-    #[test] // DELETE: Missing Note
-    fn deleting_missing_note_returns_false() -> Result<()> {
+    #[test] // SOFT DELETE: Missing note that doesn't exist
+    fn soft_deleting_missing_note_returns_false() -> Result<()> {
         let connection = setup_db()?;
 
-        let deleted = delete_note(&connection, 999)?;
+        let deleted = soft_delete_note(&connection, 999)?;
 
         assert!(!deleted);
+
+        Ok(())
+    }
+
+    #[test] // HARD DELETE: No notes to delete
+    fn hard_deleting_with_no_expired_notes_returns_zero() -> Result<()> {
+        let connection = setup_db()?;
+
+        let cutoff = Utc::now();
+
+        let rows_deleted = hard_delete_expired_notes(&connection, cutoff)?;
+
+        assert_eq!(rows_deleted, 0);
 
         Ok(())
     }

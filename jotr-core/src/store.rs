@@ -1,3 +1,4 @@
+use chrono::Utc;
 use rusqlite::{Connection, Result};
 
 use crate::database;
@@ -40,10 +41,16 @@ impl NoteStore {
         let note = self.get_note(id)?;
 
         if note.is_some() {
-            database::delete_note(&self.connection, id)?;
+            database::soft_delete_note(&self.connection, id)?;
         }
 
         Ok(note)
+    }
+
+    pub fn cleanup_deleted_notes(&self, retention_days: i64) -> Result<usize> {
+        let cutoff = Utc::now() - chrono::Duration::days(retention_days);
+
+        database::hard_delete_expired_notes(&self.connection, cutoff)
     }
 }
 
