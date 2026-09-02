@@ -236,6 +236,15 @@ mod tests {
         Ok(connection)
     }
 
+    #[test] // Startup calls this unconditionally, so it must tolerate an existing schema
+    fn initializing_database_twice_is_idempotent() -> Result<()> {
+        let connection = setup_db()?;
+
+        initialize_database(&connection)?;
+
+        Ok(())
+    }
+
     #[test] // CREATE
     fn can_add_note() -> Result<()> {
         let connection = setup_db()?;
@@ -290,6 +299,17 @@ mod tests {
         Ok(())
     }
 
+    #[test] // READ: All Notes, none present
+    fn get_all_notes_returns_empty_when_none_exist() -> Result<()> {
+        let connection = setup_db()?;
+
+        let notes = get_all_notes(&connection)?;
+
+        assert!(notes.is_empty());
+
+        Ok(())
+    }
+
     #[test] // UPDATE
     fn can_update_note() -> Result<()> {
         let connection = setup_db()?;
@@ -307,6 +327,26 @@ mod tests {
         Ok(())
     }
 
+    #[test] // UPDATE: content can still be edited while a note is in the trash
+    fn can_update_soft_deleted_note() -> Result<()> {
+        let connection = setup_db()?;
+        let id = add_note(&connection, "Hello JotR")?;
+        soft_delete_note(&connection, id)?;
+
+        let updated = update_note(&connection, id, "Updated content")?;
+
+        assert!(updated);
+
+        let note = get_deleted_notes(&connection)?
+            .into_iter()
+            .find(|note| note.id == id)
+            .expect("Note should still be in the trash");
+
+        assert_eq!(note.content, "Updated content");
+
+        Ok(())
+    }
+
     #[test] // SOFT DELETE
     fn can_soft_delete_note() -> Result<()> {
         let connection = setup_db()?;
@@ -318,6 +358,19 @@ mod tests {
         let note = get_note_by_id(&connection, id)?;
 
         assert!(note.is_none());
+
+        Ok(())
+    }
+
+    #[test] // SOFT DELETE: Already-deleted note is a no-op, not a re-delete
+    fn soft_deleting_already_deleted_note_is_noop() -> Result<()> {
+        let connection = setup_db()?;
+        let id = add_note(&connection, "Hello JotR")?;
+
+        soft_delete_note(&connection, id)?;
+        let second_delete = soft_delete_note(&connection, id)?;
+
+        assert!(second_delete.is_none());
 
         Ok(())
     }
@@ -345,6 +398,41 @@ mod tests {
         )?;
 
         assert_eq!(remaining, 0);
+
+        Ok(())
+    }
+
+    #[test] // HARD DELETE: mixed cutoff — only the note deleted before the cutoff is purged
+    fn hard_delete_expired_notes_only_removes_notes_past_cutoff() -> Result<()> {
+        let connection = setup_db()?;
+
+        let expired_id = add_note(&connection, "Expired")?;
+        let recent_id = add_note(&connection, "Recently deleted")?;
+        let active_id = add_note(&connection, "Still active")?;
+
+        soft_delete_note(&connection, expired_id)?;
+        soft_delete_note(&connection, recent_id)?;
+
+        // Backdate the "expired" note's deletion directly so its timestamp is
+        // reliably older than `recent_id`'s, instead of relying on real time
+        // passing between the two `soft_delete_note` calls above.
+        connection.execute(
+            "UPDATE notes SET deleted_at = ?1 WHERE id = ?2",
+            params![Utc::now() - chrono::Duration::days(10), expired_id],
+        )?;
+
+        let cutoff = Utc::now() - chrono::Duration::days(1);
+        let rows_deleted = hard_delete_expired_notes(&connection, cutoff)?;
+
+        assert_eq!(rows_deleted, 1);
+
+        // The recently-deleted note is still in the trash...
+        let deleted_notes = get_deleted_notes(&connection)?;
+        assert_eq!(deleted_notes.len(), 1);
+        assert_eq!(deleted_notes[0].id, recent_id);
+
+        // ...and the active note was never touched, regardless of the cutoff.
+        assert!(get_note_by_id(&connection, active_id)?.is_some());
 
         Ok(())
     }
@@ -395,6 +483,31 @@ mod tests {
         Ok(())
     }
 
+    #[test] // HARD DELETE: existing note removed outright, regardless of soft-delete state
+    fn can_hard_delete_note() -> Result<()> {
+        let connection = setup_db()?;
+
+        let id = add_note(&connection, "Hello JotR")?;
+
+        let deleted = hard_delete_note(&connection, id)?;
+
+        assert!(deleted);
+        assert_eq!(get_note_by_id(&connection, id)?, None);
+
+        Ok(())
+    }
+
+    #[test] // HARD DELETE: Missing note that doesn't exist
+    fn hard_deleting_missing_note_returns_false() -> Result<()> {
+        let connection = setup_db()?;
+
+        let deleted = hard_delete_note(&connection, 999)?;
+
+        assert!(!deleted);
+
+        Ok(())
+    }
+
     #[test] // READ: Get deleted notes
     fn can_get_deleted_notes() -> Result<()> {
         let connection = setup_db()?;
@@ -410,6 +523,19 @@ mod tests {
         assert_eq!(deleted_notes.len(), 2);
         assert_eq!(deleted_notes[0].id, id2);
         assert_eq!(deleted_notes[1].id, id1);
+
+        Ok(())
+    }
+
+    #[test] // READ: Get deleted notes, none present
+    fn get_deleted_notes_returns_empty_when_none_deleted() -> Result<()> {
+        let connection = setup_db()?;
+
+        add_note(&connection, "Hello JotR")?;
+
+        let deleted_notes = get_deleted_notes(&connection)?;
+
+        assert!(deleted_notes.is_empty());
 
         Ok(())
     }
@@ -430,6 +556,30 @@ mod tests {
         assert_eq!(note.id, id);
         assert_eq!(note.content, "Hello JotR");
         assert!(note.deleted_at.is_none());
+
+        Ok(())
+    }
+
+    #[test] // RESTORE: Note that was never soft-deleted
+    fn restoring_active_note_returns_false() -> Result<()> {
+        let connection = setup_db()?;
+
+        let id = add_note(&connection, "Hello JotR")?;
+
+        let restored = restore_note(&connection, id)?;
+
+        assert!(!restored);
+
+        Ok(())
+    }
+
+    #[test] // RESTORE: Missing note that doesn't exist
+    fn restoring_missing_note_returns_false() -> Result<()> {
+        let connection = setup_db()?;
+
+        let restored = restore_note(&connection, 999)?;
+
+        assert!(!restored);
 
         Ok(())
     }

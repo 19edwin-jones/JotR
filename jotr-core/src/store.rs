@@ -107,7 +107,34 @@ mod tests {
         assert_eq!(updated.content, "Updated content");
 
         assert_eq!(updated.created_at, original.created_at);
-        assert!(updated.updated_at >= original.updated_at);
+        assert!(updated.updated_at > original.updated_at);
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_missing_note_returns_none() -> Result<()> {
+        let store = setup_store()?;
+
+        let note = store.get_note(999)?;
+
+        assert_eq!(note, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn notes_returns_only_active_notes() -> Result<()> {
+        let store = setup_store()?;
+
+        let active_id = store.add_note("Active note")?;
+        let deleted_id = store.add_note("Deleted note")?;
+        store.delete_note(deleted_id)?;
+
+        let notes = store.notes()?;
+
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, active_id);
 
         Ok(())
     }
@@ -194,6 +221,17 @@ mod tests {
     }
 
     #[test]
+    fn restoring_missing_note_returns_false() -> Result<()> {
+        let store = setup_store()?;
+
+        let restored = store.restore_note(999)?;
+
+        assert!(!restored);
+
+        Ok(())
+    }
+
+    #[test]
     fn cleanup_deleted_notes_removes_expired_notes() -> Result<()> {
         let store = setup_store()?;
 
@@ -204,6 +242,24 @@ mod tests {
 
         assert_eq!(deleted, 1);
         assert!(store.deleted_notes()?.is_empty());
+
+        Ok(())
+    }
+
+    // Regression guard for the retention cutoff's date-math direction: a large
+    // retention window should push the cutoff into the past, not the future,
+    // so a just-deleted note isn't swept up immediately.
+    #[test]
+    fn cleanup_deleted_notes_keeps_notes_within_retention() -> Result<()> {
+        let store = setup_store()?;
+
+        let id = store.add_note("Hello JotR")?;
+        store.delete_note(id)?;
+
+        let deleted = store.cleanup_deleted_notes(30)?;
+
+        assert_eq!(deleted, 0);
+        assert_eq!(store.deleted_notes()?.len(), 1);
 
         Ok(())
     }
@@ -219,6 +275,17 @@ mod tests {
 
         assert!(deleted);
         assert!(store.deleted_notes()?.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn permanently_delete_missing_note_returns_false() -> Result<()> {
+        let store = setup_store()?;
+
+        let deleted = store.permanently_delete_note(999)?;
+
+        assert!(!deleted);
 
         Ok(())
     }
